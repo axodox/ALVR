@@ -1480,6 +1480,7 @@ fn connection_pipeline(
     *ctx.haptics_sender.lock() = None;
 
     *ctx.video_recording_file.lock() = None;
+    *ctx.alpha_video_recording_file.lock() = None;
 
     session_manager_lock.update_client_connections(
         client_hostname,
