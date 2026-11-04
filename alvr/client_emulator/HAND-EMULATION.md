@@ -82,7 +82,8 @@ Two properties are worth stating because a lot follows from them:
 | `src/render.rs` | — | `HandRenderer`, `SkinPipeline`, `HandTint`, `DeviceModels` |
 | `src/client.rs` | — | `TrackedHand`, skeleton interpolation, `hand_skeletons` on the wire |
 | `src/api.rs`, `src/main.rs` | — | `HandCommand`, `HandsResponse`, state ownership and wiring |
-| `tools/fetch_hand_model.py` | — | Downloads the CC0 hand models |
+| `models/hand_*.gltf` | — | The CC0 hand models, copied beside the executable by `build.rs` |
+| `tools/fetch_hand_model.py` | — | Refreshes those models from upstream |
 
 `overlay.rs` is shared on purpose: the brief called for hands to be posed identically to
 controllers, and two copies would have drifted. It has four slots — a controller and a hand per
@@ -96,9 +97,15 @@ impossible, so an API caller sweeping values would mostly produce non-hands.
 
 Built in the **palm frame**, which is OpenXR's palm joint verbatim: origin at the centre of the
 middle metacarpal, -Z towards the fingertips, +Y out of the back of the hand. The constants place
-the middle metacarpal exactly on the palm's Z axis and the wrist directly behind it, which
-`palm_and_wrist_match_the_spec` asserts. Being close is not the same as being right here: every
-offset downstream was tuned against the real convention.
+the middle metacarpal exactly on the palm's Z axis, which `palm_and_wrist_match_the_spec` asserts.
+Being close is not the same as being right here: every offset downstream was tuned against the
+real convention.
+
+The wrist is the one deliberate departure. It is the WebXR generic hand's, a few millimetres off
+the middle finger's axis, and oriented like the palm, *not* as the spec words it ("+Z parallel to
+the line from wrist joint to middle finger metacarpal joint"). That wording puts the middle
+metacarpal exactly on the wrist's Z axis, and SteamVR cannot handle that; see "the shaking wrist"
+below. `the_middle_metacarpal_is_off_the_wrist_axis` keeps it about 6° off.
 
 Two refinements over the brief:
 
@@ -135,8 +142,9 @@ leaving the user with built-ins no edit can change. The API renamed the pose sel
 
 ## Rendering
 
-The model is fetched, not vendored: `tools/fetch_hand_model.py` pulls two CC0 hands from Godot XR
-Tools (pinned commit, SHA-256 checked), rigged to 26 joints named after the OpenXR layout.
+The models are committed in `models/` and copied beside the executable by `build.rs`: two CC0
+hands from Godot XR Tools, rigged to 26 joints named after the OpenXR layout.
+`tools/fetch_hand_model.py` refreshes them (pinned commit, SHA-256 checked).
 
 **Retargeting assumes nothing about the rig.** That model runs bones along +Y (Blender armature
 default) where OpenXR runs along -Z, and its bind pose is a relaxed hand, not a flat one. Both
@@ -165,27 +173,15 @@ bind pose's cross-sectional radius along each finger.
 | `headset.controllers.hand_skeleton` | Must be enabled or the skeleton is dropped before the driver |
 | `...hand_skeleton.steamvr_input_2_0` | **The big one.** On: hands are separate devices with SteamVR's `svl_hand_interaction_augmented` profile, hand icons, full skeletal level. Off: hands ride the controller device and bring its whole presentation — controller icons and models, a ray from the oculus_touch tip pose, and the skeleton in its "with controller" range, which curls the fingers around a controller that is not there. `steamvr-restart` flagged |
 | `...hand_tracking_interaction` | **Off by default.** While off, no gesture produces any button, so nothing can be clicked at any distance |
-| `left_hand_tracking_position_offset` / `rotation_offset` | Place the device pose relative to the palm. One transform, three consumers: the pointer ray, the render model, and the grip anchor applications attach held objects to |
+| `left_hand_tracking_position_offset` / `rotation_offset` | Place the device pose relative to the palm, which places the render model and the grip anchor applications attach held objects to. The pointer ray no longer follows them; see below |
 
-That last row is the live trade. Defaults `[0.04, -0.02, -0.13]` and `[0, -45, -90]` present a hand
-as a *held controller*: the ray leaves 45° off the fingers from 13 cm ahead of the palm. Measured
-with pyopenvr, the device orientation SteamVR reports is bit-for-bit that rotation offset — 0.0° of
-error — so the emulator is sending the palm exactly where ALVR expects. Only the middle value steers
-the ray: `-10` aims along the index finger (34.5° → **1.0°** measured), `0` along the middle. But
-moving the *position* to put the ray's origin on the index knuckle also moves the grip anchor about
-10 cm, and held objects then overlap the hand. There is no single constant that serves both, because
-a hand-tracking device should expose aim and grip as separate poses and ALVR derives everything from
-one.
-
-**Settings currently set on this machine** (in `build/alvr_streamer_windows/session.json`, changed
-during development, all revertible in the dashboard):
-
-| Setting | Now | ALVR default |
-|---|---|---|
-| `hand_skeleton.steamvr_input_2_0` | `true` | `true` |
-| `hand_tracking_interaction` | `true` | `false` |
-| `left_hand_tracking_rotation_offset` | `[0, -10, -90]` | `[0, -45, -90]` |
-| `left_hand_tracking_position_offset` | `[0.04, -0.02, -0.13]` | same |
+The pointer ray and poke cursor come from the profile's `/pose/tip`, which the driver sets from
+the joints (`tracking::hand_tip_offset`): at the index knuckle, pointing along the index metacarpal,
++Y out of the back of the hand. Both are rigid with the palm, so pinching does not move the ray, and
+they are independent of the offsets above. Defaults `[0.04, -0.02, -0.13]` and `[0, -45, -90]`
+therefore only present the hand as a *held controller* for the render model and the grip anchor.
+Before the tip had its own orientation it inherited the device's, and the ray left 45° off the
+fingers; the only cure then was a rotation offset that also moved the grip anchor.
 
 ## The driver change
 
@@ -260,10 +256,27 @@ Recorded because each cost real time or looked convincing.
   accumulates `m_currentThumbTouch` / `m_triggerValue` / `m_gripValue` to fake finger curl for a
   hand *holding* a controller (there is a `todo: move to rust` above it). Presentational only;
   bindings read the buttons.
+- **The shaking wrist.** An OpenXR application's `XR_HAND_JOINT_WRIST_EXT` snapped between a fixed
+  set of orientations up to 180° apart, constantly and worst while moving, with the palm and the
+  fingers steady and every location flag valid. The trigger is the middle metacarpal base lying
+  *exactly* on the wrist's Z axis: in the wrist's frame it sits at (0, 0, -d), with x and y down to
+  float rounding, and whatever SteamVR's OpenXR runtime derives the wrist's orientation from has no
+  stable answer there, so rounding of about 1e-7 picks a different one each frame. That is precisely
+  the frame the spec describes for the wrist, which is why a careful emulator walks into it and a
+  tracked hand never does. Pinned by three builds: wrist on the palm's axis and oriented like the
+  palm (the original layout) shook; the WebXR wrist position, oriented like the palm (≈6° off the
+  axis), was steady; the same position turned to face the metacarpal as the spec words it shook
+  again (the first two measured in the app, the third by eye). We have not seen SteamVR's
+  computation, only where it fails. What did *not* explain it, each checked: the application (it
+  reads exactly what the runtime returns), the `/pose/tip` rotation (the old driver shook the same),
+  the wrist bone sitting at a 180° quaternion (moved off it through the rotation offset; no change),
+  and the arrangement of the other metacarpal bases (the third build had them arched, and shook).
+  Noise also hides it (0.03 mm of random per-joint noise was enough), which is why a real headset
+  never shows it, but noise would only mask the alignment, not remove it.
 
 ## How to verify
 
-- **Geometry:** `cargo test -p alvr_client_emulator` — 15 tests, including the palm/wrist spec
+- **Geometry:** `cargo test -p alvr_client_emulator` — 26 tests, including the palm/wrist spec
   conformance, mirroring, and that Click's midpoint lands inside the recogniser's pinch distance.
 - **What SteamVR actually sees:** pyopenvr is installed. Read
   `getDeviceToAbsoluteTrackingPose` and compare device orientation against the head to isolate the
@@ -282,8 +295,9 @@ Recorded because each cost real time or looked convincing.
 1. **Upstream the two driver changes** — both are real gaps rather than emulator accommodations.
    The input mapping is a gap for any hand-tracked headset; the `PoseHistory` tie-break costs a real
    user a 1.67-second-stale pose whenever they hold still. Neither is committed.
-2. **Aim and grip need separate poses.** The single offset device pose cannot serve both. The
-   profile already declares `/pose/grip`, `/pose/raw` and `/pose/tip`.
+2. **Aim and grip need separate poses.** Aim is now `/pose/tip`. The grip is still the offset
+   device pose; publishing the profile's `/pose/grip` at the spec's grip (`interaction.rs`) would
+   free the offsets from doing that job.
 3. **`middle/ring/pinky_pinch` are unpublished.** The gesture recogniser binds those to face-button
    *clicks* (binary) while the profile wants scalar values, so they were left out of the mapping.
 4. **Velocities are zero**, as for the controllers; see `HANDOVER.md` for why that is deliberate.

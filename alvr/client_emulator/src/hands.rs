@@ -19,7 +19,8 @@
 //! away from it on the right. The finger joints follow the spec's own convention too (-Z along the
 //! bone towards the tip, +Y out of the back of the finger nail), so the joints this produces need
 //! no conversion anywhere. The middle metacarpal therefore lies exactly on the palm frame's Z
-//! axis, and the wrist exactly behind it, which is what the constants below encode.
+//! axis, which is what the constants below encode; the wrist sits behind it, slightly off that
+//! axis, as a real one does.
 
 use crate::controllers::Hand;
 use alvr_common::{
@@ -275,28 +276,26 @@ impl Gesture {
     }
 }
 
-// Anatomy of the modelled hand, in metres, for a nominal hand 185 mm from wrist to middle
+// Anatomy of the modelled hand, in metres, for a nominal hand 190 mm from wrist to middle
 // fingertip. `hand_length` in the settings scales all of it. Values are approximate adult
 // measurements; what matters is that the proportions are right, since the gesture recognition on
 // the server measures real distances between fingertips.
 
 /// Wrist to middle fingertip of the built-in proportions, which `hand_length` scales against.
-const NOMINAL_HAND_LENGTH: f32 = 0.185;
+const NOMINAL_HAND_LENGTH: f32 = 0.190;
 
-/// Wrist joint, directly behind the palm on its Z axis, which is what makes the wrist's own
-/// spec-defined frame — "+Z parallel to the line from wrist joint to middle finger metacarpal
-/// joint" — the identity in the palm frame.
-const WRIST_POSITION: Vec3 = Vec3::new(0.0, 0.0, 0.0555);
+/// Wrist joint.
+const WRIST_POSITION: Vec3 = Vec3::new(-0.0015, 0.0027, 0.0605);
 
 /// Metacarpal bases (the carpometacarpal joints), where each finger's chain starts. Close
 /// together at the wrist; the knuckles below fan much wider, which is what gives the palm its
 /// shape. The middle finger's sits on the palm frame's axis, since the palm joint is defined as
 /// the centre of that bone.
 const METACARPAL_BASE: [Vec3; 4] = [
-    Vec3::new(0.011, 0.001, 0.0325),
-    Vec3::new(0.000, 0.000, 0.0328),
-    Vec3::new(-0.012, 0.001, 0.0320),
-    Vec3::new(-0.023, 0.000, 0.0300),
+    Vec3::new(0.0070, -0.0028, 0.0239),
+    Vec3::new(0.0000, 0.0000, 0.0328),
+    Vec3::new(-0.0106, -0.0013, 0.0334),
+    Vec3::new(-0.0257, -0.0032, 0.0264),
 ];
 
 /// Knuckles (the metacarpophalangeal joints) at rest, slightly arched so the index and middle sit
@@ -325,8 +324,10 @@ const THUMB_BONES: [f32; 3] = [0.043, 0.032, 0.028];
 
 /// Flexion at full curl, in degrees: knuckle, middle joint, fingertip joint.
 const FLEXION: [f32; 3] = [85.0, 100.0, 68.0];
-/// The same for the thumb, whose knuckle and single interphalangeal joint bend far less.
-const THUMB_FLEXION: [f32; 2] = [55.0, 78.0];
+/// The same for the thumb, whose knuckle and single interphalangeal joint bend far less. In a fist
+/// the thumb lies across the curled fingers with its last joint only partly bent; bending it as far
+/// as a finger's hooks the tip back towards the wrist.
+const THUMB_FLEXION: [f32; 2] = [55.0, 45.0];
 /// Curling the ring and little fingers cups the palm by rotating their metacarpals, which a real
 /// hand does at the carpometacarpal joints and a flat palm cannot fake.
 const CUP: [f32; 4] = [0.0, 0.0, 8.0, 15.0];
@@ -345,17 +346,22 @@ const ABDUCTION_APART: [f32; 4] = [16.0, 3.0, -9.0, -22.0];
 // `THUMB_ALONG` is the direction of the metacarpal, and `THUMB_CURL_TOWARDS` is where flexing the
 // thumb takes its tip. Each pair is the value at opposition 0 and at opposition 1.
 
-/// Metacarpal direction: beside the index finger in the plane of the palm, then swung across.
+/// Metacarpal direction: beside the index finger in the plane of the palm, then swung down in
+/// front of the palm. Opposed, it points forward and into the palm, barely outwards: swinging it
+/// out to the side too splays the curled thumb away from the fist.
 const THUMB_ALONG: [Vec3; 2] = [
     Vec3::new(0.50, -0.10, -0.86),
-    Vec3::new(0.42, -0.60, -0.68),
+    Vec3::new(0.155, -0.65, -0.745),
 ];
 
-/// Where flexion takes the thumb: towards the palm like a finger, then across it towards the
-/// fingertips, which is what makes an opposed thumb able to pinch.
+/// Where flexion takes the thumb: across the palm towards the little finger, whether the thumb is
+/// opposed or not. A thumb's flexion runs parallel to the palm rather than into it, unlike a
+/// finger's; curling it straight into the palm carries it out of the hand instead of round the
+/// fist. The values are derived from where a real thumb's joints sit in a fist, against this
+/// hand's own knuckles.
 const THUMB_CURL_TOWARDS: [Vec3; 2] = [
-    Vec3::new(0.0, -1.0, 0.0),
-    Vec3::new(-0.80, -0.30, -0.52),
+    Vec3::new(-0.90, -0.40, 0.0),
+    Vec3::new(-0.85, -0.45, -0.25),
 ];
 
 fn degrees(value: f32) -> f32 {
@@ -390,6 +396,8 @@ pub fn skeleton(pose: &HandPose, hand: Hand, length: f32) -> [Pose; JOINT_COUNT]
 
     let mut joints = [Pose::IDENTITY; JOINT_COUNT];
 
+    // Deliberately not the spec's frame (+Z towards the middle metacarpal): with that joint exactly
+    // on the wrist's axis, SteamVR snaps the wrist by up to 180° from frame to frame.
     joints[WRIST] = Pose {
         orientation: Quat::IDENTITY,
         position: mirrored(WRIST_POSITION),
@@ -484,16 +492,62 @@ fn forward(length: f32) -> Vec3 {
     Vec3::new(0.0, 0.0, -length)
 }
 
-/// The direction a hand points, in the palm frame: along the index finger of a flat hand.
+/// The direction a hand points, in the palm frame: along the index metacarpal, from its base to the
+/// knuckle, which is the line the extended index finger continues.
 ///
-/// Constant rather than read from the live pose, for the same reason the driver's own aim offset
-/// is a constant: an axis that swung about as the fingers curled would make the hand impossible to
-/// aim with. It is the axis the server's ray can be lined up against; see the README.
+/// Constant rather than read from the live pose: an axis that swung about as the fingers curled
+/// would make the hand impossible to aim with, and the metacarpal does not articulate. The driver
+/// points SteamVR's `/pose/tip` along the same bone (`server_openvr::tracking::hand_tip_offset`),
+/// so the Aim gizmo and the application's ray agree.
 pub fn aim_direction(hand: Hand) -> Vec3 {
     let flat = skeleton(&HandPose::FLAT, hand, NOMINAL_HAND_LENGTH);
     let chain = Finger::Index.joints();
 
-    (flat[chain[4]].position - flat[chain[1]].position).normalize_or(Vec3::NEG_Z)
+    (flat[chain[1]].position - flat[chain[0]].position).normalize_or(Vec3::NEG_Z)
+}
+
+/// Where a held tube's axis runs through the hand, in the palm frame of `joints`: the centre of the
+/// loop the middle finger closes in a fist. OpenXR puts the grip pose here, "at the centroid of the
+/// user's palm when the user makes a fist or holds a tube-like object".
+///
+/// Constant for the same reason as [`aim_direction`] — a grip that moved as the fingers curled
+/// would shake whatever the hand holds — and scaled to `joints` by the middle metacarpal, the one
+/// bone no pose can change.
+pub fn fist_centre(joints: &[Pose; JOINT_COUNT]) -> Vec3 {
+    const FIST: HandPose = HandPose {
+        curl: [1.0; 5],
+        spread: 0.0,
+        thumb_opposition: 0.0,
+    };
+
+    // Mirroring only negates X, which the centre does not use, so either hand will do.
+    let fist = skeleton(&FIST, Hand::Left, NOMINAL_HAND_LENGTH);
+    let chain = Finger::Middle.joints();
+
+    // The loop in the palm's midplane, as (Z, Y): the palm, then out along the finger and round to
+    // its curled tip, closing back at the palm. Its area centroid, by the shoelace formula, rather
+    // than the mean of its corners, which crowd together at the curled end.
+    let corners: Vec<(f32, f32)> = std::iter::once(PALM)
+        .chain(chain[1..].iter().copied())
+        .map(|joint| (fist[joint].position.z, fist[joint].position.y))
+        .collect();
+
+    let (mut area, mut z, mut y) = (0.0, 0.0, 0.0);
+    for (index, &(z0, y0)) in corners.iter().enumerate() {
+        let (z1, y1) = corners[(index + 1) % corners.len()];
+        let cross = z0 * y1 - z1 * y0;
+
+        area += cross;
+        z += (z0 + z1) * cross;
+        y += (y0 + y1) * cross;
+    }
+    let centre = Vec3::new(0.0, y / (3.0 * area), z / (3.0 * area)) - fist[PALM].position;
+
+    let metacarpal = |joints: &[Pose; JOINT_COUNT]| {
+        joints[PALM].position.distance(joints[chain[1]].position)
+    };
+
+    joints[PALM].position + centre * (metacarpal(joints) / metacarpal(&fist))
 }
 
 /// Whether a joint lies beyond the second knuckle — the part of a finger that a fingerless glove
@@ -950,9 +1004,8 @@ struct SettingsFile {
     transition_seconds: f32,
     /// Base colour of the hand model, linear RGB.
     model_color: [f32; 3],
-    /// Colour of the glove on a fingerless-glove model such as the one the fetch script
-    /// downloads, whose cuff ridge sits at the second knuckle. Everything from there to the
-    /// fingertips takes `model_color` instead, blended across the weights so the seam is clean.
+    /// Colour of the glove on a fingerless-glove model such as the bundled one, whose cuff ridge
+    /// sits at the second knuckle. Everything from there to the fingertips takes `model_color` instead, blended across the weights so the seam is clean.
     /// Set to `null` for a plain hand model, which draws entirely in `model_color`.
     ///
     /// Defaulted rather than optional so a settings file written before this existed picks the
@@ -1021,7 +1074,7 @@ struct KeyframeEntry {
 }
 
 /// The glove tint a settings file gets when it does not mention one, which is the colour that
-/// suits the model the fetch script downloads.
+/// suits the bundled model.
 fn default_glove_color() -> Option<[f32; 3]> {
     Some([0.20, 0.22, 0.28])
 }
@@ -1031,8 +1084,8 @@ fn load_file(path: &Path) -> Result<SettingsFile> {
     serde_json::from_str(&text).context("Cannot parse hand settings")
 }
 
-/// The default settings file: the four poses the design document calls for, and a few gestures
-/// built from them. More of either can be added by editing the file; nothing in the code
+/// The default settings file: the four poses the design document calls for, a flat hand, and a few
+/// gestures built from them. More of either can be added by editing the file; nothing in the code
 /// enumerates them.
 fn default_file() -> SettingsFile {
     let poses = vec![
@@ -1075,13 +1128,25 @@ fn default_file() -> SettingsFile {
         PoseEntry {
             name: "Pinch".into(),
             description: "Thumb and index fingertips touching, the rest curled".into(),
-            thumb: 0.45,
-            index: 0.52,
+            thumb: 0.15,
+            index: 0.45,
             middle: 0.95,
             ring: 1.0,
             little: 1.0,
             spread: 0.0,
-            thumb_opposition: 0.72,
+            thumb_opposition: 0.7,
+            transition_seconds: None,
+        },
+        PoseEntry {
+            name: "Plank".into(),
+            description: "Flat open hand, every finger and the thumb straight".into(),
+            thumb: 0.0,
+            index: 0.0,
+            middle: 0.0,
+            ring: 0.0,
+            little: 0.0,
+            spread: 0.0,
+            thumb_opposition: 0.0,
             transition_seconds: None,
         },
     ];
@@ -1300,62 +1365,10 @@ mod tests {
         joints[a].position.distance(joints[b].position)
     }
 
-
-    /// The aim origin the driver derives must not move when the fingers do.
-    ///
-    /// `server_openvr`'s `tracking::hand_tip_offset` places SteamVR's `/pose/tip` — the origin of
-    /// the pointer ray and the poke cursor — at the index fingertip's *extended* position, built
-    /// from the knuckle and the bone lengths rather than the live fingertip. This mirrors that
-    /// construction against this model, because the failure it prevents is only visible end to end:
-    /// take the live fingertip instead and a pinch drags the aim off the target at the instant the
-    /// user commits to clicking it.
-    fn extended_index_tip(joints: &[Pose; JOINT_COUNT]) -> Vec3 {
-        let knuckle = joints[7].position;
-        let length = joints[7].position.distance(joints[8].position)
-            + joints[8].position.distance(joints[9].position)
-            + joints[9].position.distance(joints[10].position);
-
-        knuckle + (knuckle - joints[6].position).normalize() * length
-    }
-
-    #[test]
-    fn aim_origin_does_not_follow_the_fingers() {
-        for hand in [Hand::Left, Hand::Right] {
-            let reference = extended_index_tip(&joints("Point", hand));
-
-            for pose in ["Idle", "Grasp", "Point", "Pinch"] {
-                let joints = joints(pose, hand);
-                let drift = extended_index_tip(&joints).distance(reference);
-
-                assert!(
-                    drift < 1e-4,
-                    "{pose}: aim origin moved {:.1} mm from the pointing pose",
-                    drift * 1000.0
-                );
-
-                // The live fingertip is what this must not be, and the gap is the whole point:
-                // it is the distance the aim would jump between poses.
-                let live = joints[10].position.distance(reference);
-                let side = if hand == Hand::Left { "left " } else { "right" };
-                println!("{side} {pose:<6} live fingertip is {:.1} mm away", live * 1000.0);
-            }
-
-            // Pointing is when the aim has to be right: there the extended position and the real
-            // fingertip should agree closely.
-            let pointing = joints("Point", hand);
-            let error = pointing[10].position.distance(reference);
-            assert!(
-                error < 0.02,
-                "pointing: aim origin is {:.1} mm from the actual fingertip",
-                error * 1000.0
-            );
-        }
-    }
-
     /// The hand is the size it says it is, and both hands are mirror images.
     #[test]
     fn proportions_and_mirroring() {
-        for gesture in ["Idle", "Grasp", "Point", "Pinch"] {
+        for gesture in ["Idle", "Grasp", "Point", "Pinch", "Plank"] {
             let left = joints(gesture, Hand::Left);
             let right = joints(gesture, Hand::Right);
 
@@ -1435,7 +1448,7 @@ mod tests {
         );
 
         // The other gestures must not read as a pinch by accident.
-        for gesture in ["Idle", "Point"] {
+        for gesture in ["Idle", "Point", "Plank"] {
             let joints = joints(gesture, Hand::Left);
             let gap = distance(&joints, 5, 10);
 
@@ -1472,6 +1485,17 @@ mod tests {
             curl(&point, Finger::Index) > 0.07,
             "point does not extend the index finger"
         );
+
+        // A flat hand must not read as a grab on any finger.
+        let plank = joints("Plank", Hand::Left);
+        for finger in [Finger::Index, Finger::Middle, Finger::Ring, Finger::Little] {
+            let reach = curl(&plank, finger);
+            assert!(
+                reach > 0.07,
+                "plank leaves the {} finger only {reach} m from the palm",
+                JOINT_NAMES[finger.joints()[0]]
+            );
+        }
         for finger in [Finger::Middle, Finger::Ring, Finger::Little] {
             let reach = curl(&point, finger);
             assert!(
@@ -1543,13 +1567,30 @@ mod tests {
             "the middle metacarpal does not lie on the palm's -Z axis: {along:?}"
         );
 
-        // The wrist: "+Z parallel to the line from wrist joint to middle finger metacarpal joint".
-        let towards = (base - flat[WRIST].position).normalize();
-        let wrist_forward = flat[WRIST].orientation * Vec3::NEG_Z;
         assert!(
-            wrist_forward.distance(towards) < 1e-4,
-            "the wrist does not face the middle metacarpal: {wrist_forward:?} vs {towards:?}"
+            flat[WRIST].position.z > base.z,
+            "the wrist is not behind the metacarpals"
         );
+        assert!(
+            flat[WRIST].orientation.angle_between(Quat::IDENTITY) < 1e-4,
+            "the wrist is not oriented like the palm"
+        );
+    }
+
+    /// Exactly on the axis makes SteamVR's wrist snap; see `skeleton`.
+    #[test]
+    fn the_middle_metacarpal_is_off_the_wrist_axis() {
+        for (hand, name) in [(Hand::Left, "left"), (Hand::Right, "right")] {
+            let flat = skeleton(&HandPose::FLAT, hand, 0.185);
+            let wrist = flat[WRIST];
+            let base = flat[Finger::Middle.joints()[0]].position;
+            let towards = wrist.orientation.conjugate() * (base - wrist.position);
+            let off = towards.angle_between(Vec3::NEG_Z).to_degrees();
+            assert!(
+                (3.0..10.0).contains(&off),
+                "{name}: the middle metacarpal is {off:.2}° off the wrist's axis"
+            );
+        }
     }
 
     /// A fingerless glove model is two-toned at its cuff, which sits at the second knuckle.
