@@ -420,13 +420,14 @@ fn connection_pipeline(
     //
     // It does need to be able to ask for an IDR though: the alpha encoder starts after the color
     // one and misses the single keyframe emitted at stream start, and an H.264 decoder produces
-    // nothing until it sees one. Requests are rate limited because the server's IDR insertion is
-    // shared with the color stream.
+    // nothing until it sees one. Like the color stream, it also needs a new one after any lost or
+    // rejected packet, otherwise the last decoded alpha frame stays on screen for good. Requests
+    // are rate limited because the server's IDR insertion is shared with the color stream.
     let alpha_video_receive_thread = alpha_video_receiver.take().map(|mut receiver| {
         thread::spawn({
             let ctx = Arc::clone(&ctx);
             move || {
-                let mut got_idr = false;
+                let mut stream_corrupted = true;
                 let mut last_idr_request = Instant::now() - Duration::from_secs(10);
 
                 while is_streaming(&ctx) {
@@ -440,20 +441,33 @@ fn connection_pipeline(
                     };
 
                     if header.is_idr {
-                        got_idr = true;
-                    } else if !got_idr && Instant::now() > last_idr_request + Duration::from_secs(1)
+                        stream_corrupted = false;
+                    } else if data.had_packet_loss() {
+                        stream_corrupted = true;
+                        warn!("Network dropped alpha video packet");
+                    }
+
+                    if !stream_corrupted {
+                        let submitted = ctx
+                            .alpha_decoder_callback
+                            .lock()
+                            .as_mut()
+                            .is_some_and(|callback| callback(header.timestamp, nal));
+
+                        if !submitted {
+                            stream_corrupted = true;
+                            warn!("Dropped alpha video packet. Reason: Decoder saturation");
+                        }
+                    }
+
+                    if stream_corrupted
+                        && Instant::now() > last_idr_request + Duration::from_secs(1)
                     {
-                        // No keyframe yet: the decoder cannot output anything until one arrives.
                         last_idr_request = Instant::now();
                         if let Some(sender) = &mut *ctx.control_sender.lock() {
                             sender.send(&ClientControlPacket::RequestIdr).ok();
                         }
                     }
-
-                    ctx.alpha_decoder_callback
-                        .lock()
-                        .as_mut()
-                        .map(|callback| callback(header.timestamp, nal));
                 }
             }
         })
