@@ -18,7 +18,7 @@ use alvr_graphics::{
     StreamViewParams,
 };
 use alvr_packets::{
-    ButtonEntry, ButtonValue, FaceData, FaceExpressions, TrackingData, VideoStreamKind,
+    ButtonEntry, ButtonValue, FaceData, FaceExpressions, MarkerData, TrackingData, VideoStreamKind,
 };
 use alvr_session::{
     CodecType, FoveatedEncodingConfig, MediacodecPropType, MediacodecProperty, UpscalingConfig,
@@ -113,6 +113,13 @@ pub struct AlvrDeviceMotion {
     pose: AlvrPose,
     linear_velocity: [f32; 3],
     angular_velocity: [f32; 3],
+}
+
+#[repr(C)]
+pub struct AlvrMarker {
+    id: *const c_char, // QR code text
+    pose: AlvrPose,    // Centre of the marker; +Y towards its top edge, +Z out of its face
+    size: f32,         // Edge length in metres
 }
 
 #[allow(dead_code)]
@@ -422,6 +429,31 @@ pub extern "C" fn alvr_send_playspace(width: f32, height: f32) {
     }
 }
 
+/// All markers currently seen, in the same space as the tracking, replacing the previous list.
+#[unsafe(no_mangle)]
+pub extern "C" fn alvr_send_markers(markers: *const AlvrMarker, markers_count: u64) {
+    let markers = if !markers.is_null() {
+        unsafe { slice::from_raw_parts(markers, markers_count as usize) }
+    } else {
+        &[]
+    };
+
+    let markers = markers
+        .iter()
+        .map(|marker| MarkerData {
+            id: unsafe { CStr::from_ptr(marker.id) }
+                .to_string_lossy()
+                .into_owned(),
+            pose: alvr_common::from_capi_pose(&marker.pose),
+            size: marker.size,
+        })
+        .collect();
+
+    if let Some(context) = &*CLIENT_CORE_CONTEXT.lock() {
+        context.send_markers(markers);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn alvr_send_active_interaction_profile(
     device_id: u64,
@@ -602,9 +634,8 @@ pub extern "C" fn alvr_send_tracking_and_face_data(
     // combined gaze as the other. It is what drives foveated encoding on the server.
     let eyes_combined = eyes_social[0].or(eyes_social[1]);
 
-    let face_expressions = (!face_data.is_null()).then(|| {
-        FaceExpressions::Fb(unsafe { slice::from_raw_parts(face_data, 70) }.to_vec())
-    });
+    let face_expressions = (!face_data.is_null())
+        .then(|| FaceExpressions::Fb(unsafe { slice::from_raw_parts(face_data, 70) }.to_vec()));
 
     if let Some(context) = &*CLIENT_CORE_CONTEXT.lock() {
         context.send_tracking(TrackingData {
