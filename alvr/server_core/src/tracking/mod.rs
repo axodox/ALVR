@@ -112,6 +112,7 @@ impl TrackingManager {
     // a recenter of the client's space is followed). Returns true if the origin changed.
     pub fn update_marker_origin(&mut self, recentering_mode: &RecenteringMode) -> bool {
         let RecenteringMode::Marker { code_text } = recentering_mode else {
+            self.marker_origin = None;
             self.first_code_text = None;
             return false;
         };
