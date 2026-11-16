@@ -69,6 +69,7 @@ name = "android.permission.INTERNET"
 name = "android.permission.RECORD_AUDIO"
 [[package.metadata.android.uses_permission]]
 name = "com.oculus.permission.USE_SCENE"
+# Never requested, but Horizon OS hides XR_EXT_spatial_entity from apps that do not declare it
 [[package.metadata.android.uses_permission]]
 name = "horizonos.permission.USE_ANCHOR_API"
 [[package.metadata.android.uses_permission]]

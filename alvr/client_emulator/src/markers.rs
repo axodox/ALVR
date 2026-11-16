@@ -19,6 +19,7 @@ const MODULES: usize = 21;
 const QUIET_ZONE: usize = 4;
 /// Texels per module. Large enough to stay crisp up close under linear filtering.
 const TEXELS_PER_MODULE: usize = 8;
+
 #[derive(Serialize, Deserialize)]
 pub struct MarkerSettings {
     pub id: String,

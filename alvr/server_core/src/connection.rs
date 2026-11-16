@@ -1525,7 +1525,6 @@ fn connection_pipeline(
     keepalive_thread.join().ok();
     lifecycle_check_thread.join().ok();
 
-    ctx.tracking_manager.write().set_markers(Vec::new());
     ctx.events_sender
         .send(ServerCoreEvent::Markers(Vec::new()))
         .ok();

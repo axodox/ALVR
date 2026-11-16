@@ -102,7 +102,7 @@ pub enum ServerCoreEvent {
     ShutdownPending,
     RestartPending,
     ProximityState(bool),
-    Markers(Vec<MarkerData>), // Recentered
+    Markers(Vec<MarkerData>), // Poses already recentered
 }
 
 pub struct ConnectionContext {
