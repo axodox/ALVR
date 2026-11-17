@@ -91,7 +91,7 @@ jobs:
             ./build/AIVR-signing-certificate.cer
           if-no-files-found: error
 
-  # The same steps upstream ALVR builds its headset client with (prepare-release.yml).
+  # The same steps upstream ALVR builds its headset client with (its prepare-release.yml workflow).
   build_apk:
     runs-on: ubuntu-latest
     env:
